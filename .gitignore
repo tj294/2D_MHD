@@ -1,3 +1,7 @@
+# My Additions
+data/
+d3_rb_convect.py
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
