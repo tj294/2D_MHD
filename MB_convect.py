@@ -6,7 +6,7 @@ Usage:
 Options:
     --Ra=<Ra>           # Rayleigh number
     --Pr=<Pr>           # Prandtl number [default: 1]
-    --Pm=<Pm>           # Magnetic Pr [default: 10]
+    --Pm=<Pm>           # Magnetic Pr [default: 1]
     --Q=<Q>             # Chandrasekhar number [default: 1e3]
     --Lx=<Lx>           # Aspect Ratio of Box [default: 1]
     --Lz=<Lz>           # Depth of box [default: 1]
@@ -14,8 +14,8 @@ Options:
     --Nz=<Nz>           # Vertical resolution [default: 64]
     --maxdt=<maxdt>     # maximum timestep [default: 0.125]
     --stop=<stop>       # Sim stop time [default: 300]
-    --top=<top>         # Top Temp BC [default: insulating]
-    --bottom=<bottom>   # Bottom temp BC [default: insulating]
+    --top=<top>         # Top Temp BC [default: vanishing]
+    --bottom=<bottom>   # Bottom temp BC [default: fixed]
     --currie            # run with cos heating function
     --kazemi            # run with exp heating function
     --kinematic         # kinematic dynamo
@@ -26,9 +26,11 @@ Options:
 """
 import numpy as np
 import dedalus.public as d3
-import logging
+import logging, sys, json
+from datetime import datetime
 from docopt import docopt
 from pathlib import Path
+from mpi4py import MPI
 
 args = docopt(__doc__, version='1.0.0')
 logger = logging.getLogger(__name__)
@@ -37,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 # Parameters
 Lx = float(args['--Lx'])
-Lz = float(args['--Ly'])
+Lz = float(args['--Lz'])
 Nx, Nz = int(args['--Nx']), int(args['--Nz'])
 Rayleigh = float(args['--Ra'])
 Prandtl = float(args['--Pr'])
@@ -57,7 +59,8 @@ if args['--alfven']:
     use_alfven_velocity_limit = True
 else:
     use_alfven_velocity_limit = False
-outpath = Path(args['-o'])
+outpath = Path(args['--output'])
+outpath.mkdir(parents=True, exist_ok=True)
 
 dealias = 3/2
 timestepper = d3.RK222
@@ -120,7 +123,6 @@ ux = ex@u
 uz = ez@u
 Btrans = Bz*ex - Bx*ez
 Bvec = Bx*ex + Bz*ez
-#? Bvec = Bx*ex + Bz*ez # insted of above?
 B_scale = (Q*nu*eta*4.0*np.pi)**(1/2) # characteristic scale for B
 
 B_back = B_scale
@@ -151,9 +153,28 @@ else:
     logger.info("ignoring background field induction term")
     problem.add_equation("dt(A)  - eta*div(grad_A) + lift(tau_A2) = - u@grad(A)") 
     
+if args['--bottom']=='fixed':
+    problem.add_equation("T(z=0) = Lz")
+elif args['--bottom']=='insulating':
+    problem.add_equation("Tz(z=0)=0")
+elif args['--bottom']=='vanishing':
+    problem.add_equation("T(z=0)=0")
+else:
+    logger.error(f"Bottom BC {args['--bottom']} not recognised.")
+    logger.error(f"Accepted values are 'fixed', 'vanishing' or 'insulating'.")
+    exit(-1)
 
-problem.add_equation("T(z=0) = Lz")
-problem.add_equation("T(z=Lz) = 0")
+if args['--top'] == 'fixed':
+    problem.add_equation("T(z=Lz) = Lz")
+elif args['--top']=='insulating':
+    problem.add_equation("Tz(z=Lz) = 0")
+elif args['--top']=='vanishing':
+    problem.add_equation("T(z=Lz) = 0")
+else:
+    logger.error(f"Top BC {args['--top']} not recognised.")
+    logger.error(f"Accepted values are 'fixed', 'vanishing' or 'insulating'.")
+    exit(-1)
+
 if args['--slip'] == 'no':
     problem.add_equation("u(z=0) = 0") # no-slip
     problem.add_equation("u(z=Lz) = 0") # no-slip
@@ -189,7 +210,9 @@ T['g'] += Lz - z # Add linear background
 #A['g'] =1.0*x
 
 # Analysis and snapshots
+
 states = solver.evaluator.add_file_handler(outpath.joinpath('states'), sim_dt=1.0, max_writes=5000)
+states.add_tasks(solver.state, layout='g')
 
 snapshots = solver.evaluator.add_file_handler(outpath.joinpath('snapshots'), sim_dt=0.25, max_writes=5000)
 snapshots.add_task(T, name='buoyancy')
@@ -206,17 +229,49 @@ analysis.add_task(d3.Integrate(Tz,coords['x'])/Lx, layout='g', name='<Tz>_x')
 # Mean Re
 analysis.add_task(d3.Average(np.sqrt(u@u)/nu , ('x', 'z')), layout='g', name='Reavg')
 
+
 # Flux decomposition - Internal energy equation
 analysis.add_task(d3.Integrate(T*w,coords['x'])/Lx, layout='g', name='L_conv')
-
 analysis.add_task(-1.0*kappa*(d3.Integrate(Tz, coords['x'])/Lx), layout='g', name='L_cond_tot')
-
-# Nusselt
-analysis.add_task( 1.0 + d3.Integrate(T*w, coords)/(kappa*Lx*Lz), layout='g', name='Nusselt')
 
 # magnetic energy
 mag_E  = np.sqrt(Bvec@Bvec)
 analysis.add_task(d3.Integrate(mag_E,coords['x'])/Lx, layout='g', name='ME')
+analysis.add_task(d3.Average(mag_E, coords)/(Lx*Lz), layout='g', name="B^2")
+
+# Nusselt
+analysis.add_task( 1.0 + d3.Integrate(T*w, coords)/(kappa*Lx*Lz), layout='g', name='Nusselt')
+
+analysis.add_task(1/Lx * d3.Integrate(Tz(z=0), coords['x']), layout='g', name='WeissNu0')
+analysis.add_task(1/Lx * d3.Integrate(Tz(z=0.5), coords['x']), layout='g', name='WeissNu0.5')
+analysis.add_task(1/Lx * d3.Integrate(Tz(z=Lz), coords['x']), layout='g', name='WeissNu1')
+
+analysis.add_task(1/Lx * d3.Integrate(1 - Tz(z=0), coords['x']), layout='g', name='BBNu0')
+analysis.add_task(1/Lx * d3.Integrate(1 - Tz(z=0.5), coords['x']), layout='g', name='BBNu0.5')
+analysis.add_task(1/Lx * d3.Integrate(1 - Tz(z=Lz), coords['x']), layout='g', name='BBNu1')
+
+outpath.joinpath("run_params").mkdir(parents=True, exist_ok=True)
+run_params = {
+    "Lx": Lx,
+    "Lz": Lz,
+    "Nx": Nx,
+    "Nz": Nz,
+    "Ra": Rayleigh,
+    "Pr": Prandtl,
+    "Pm": Pm,
+    "Q": Q,
+}
+run_params = json.dumps(run_params, indent=4)
+
+with open(outpath.joinpath('run_params/runparams.json'), "w") as run_file:
+    run_file.write(run_params)
+
+with open(outpath.joinpath("run_params/args.txt"), "a+") as file:
+    if MPI.COMM_WORLD.rank == 0:
+        today = datetime.today().strftime("%Y-%m-%d %H:%M:%S\n\t")
+        file.write(today)
+        file.write("python3 " + " ".join(sys.argv) + "\n")
+
 
 
 # CFL
