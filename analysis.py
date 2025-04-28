@@ -45,7 +45,12 @@ outpath = direc.joinpath("images/")
 outpath.mkdir(exist_ok=True)
 snap_files = sorted(list(direc.glob("snapshots/*.h5")), key=lambda f: int(re.sub('\D', '', str(f.name))))
 a_files = sorted(list(direc.glob("analysis/*.h5")), key=lambda f: int(re.sub('\D', '', str(f.name))))
-
+if len(snap_files)==0:
+    print(f"No data files found in {direc}/snapshots/")
+    raise FileNotFoundError
+if len(a_files)==0:
+    print(f"No data files found in {direc}/analysis/")
+    raise FileNotFoundError
 
 if args['-g']:
     vprint("Loading snapshots...")
@@ -80,9 +85,9 @@ if args['-g']:
         cf = plt.contourf(xx, zz, Temp[tidx], 70, cmap='inferno')
         # if count!=0:
             # plt.quiver(xx, zz, Bx[tidx], Bz[tidx], color='white')
-        norm = mpl.colors.Normalize(vmin=-np.max(A), vmax=np.max(A))
-        cs = plt.contour(xx, zz, A[tidx], cmap='PiYG', norm=norm)
-        sm = plt.cm.ScalarMappable(norm=norm, cmap=cs.cmap)
+        norm = mpl.colors.Normalize(vmin=-np.max(A[tidx]), vmax=np.max(A[tidx]))
+        cs = plt.contour(xx, zz, A[tidx], 5, cmap='PiYG', norm=norm)
+        sm = plt.cm.ScalarMappable(norm=norm, cmap='PiYG')
         sm.set_array([])
         Tcax = ax.inset_axes([1, 0, 0.05, 1])
         Bcax = ax.inset_axes([0, 1, 1, 0.05])
