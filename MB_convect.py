@@ -18,6 +18,7 @@ Options:
     --bottom=<bottom>   # Bottom temp BC [default: fixed]
     --currie            # run with cos heating function
     --kazemi            # run with exp heating function
+    --Delta=<Delta>     # Cosine Heating Delta [default: 0.2]
     --kinematic         # kinematic dynamo
     --background        # include background field
     --alfven            # include alfven velocity limit
@@ -35,7 +36,9 @@ from mpi4py import MPI
 args = docopt(__doc__, version='1.0.0')
 logger = logging.getLogger(__name__)
 
-
+class NaNFlowError(Exception):
+    exit_code = -50
+    pass
 
 # Parameters
 Lx = float(args['--Lx'])
@@ -59,6 +62,11 @@ if args['--alfven']:
     use_alfven_velocity_limit = True
 else:
     use_alfven_velocity_limit = False
+if args['--currie']:
+    Delta = float(args['--Delta'])
+    Lz = Lz + 2*Delta
+    Lx = Lx*Lz
+
 outpath = Path(args['--output'])
 outpath.mkdir(parents=True, exist_ok=True)
 
@@ -128,12 +136,32 @@ B_scale = (Q*nu*eta*4.0*np.pi)**(1/2) # characteristic scale for B
 B_back = B_scale
 B_back_vector = B_back*ex + B_back*ez
 
+#? Heating function
+F = 1
+heat = dist.Field(bases=zbasis)
+if args['--currie']:
+    heat_func = lambda z: (F/Delta) * (
+        1 + np.cos((2 * np.pi * (z - (Delta / 2))) / Delta)
+    )
+    cool_func = lambda z: (F/Delta) * (
+        -1 - np.cos((2 * np.pi * (z - Lz + (Delta / 2))) / Delta)
+    )
+    heat['g'] = np.piecewise(
+        z, [z<=Delta, z >= Lz - Delta], [heat_func, cool_func, 0]
+    )
+elif args['--kazemi']:
+    l = 0.1
+    beta = 1
+    a = 1 / (0.1 * (1 - np.exp(-1/l)))
+    heat_func = lambda z: a * np.exp(-z/l) - beta
+    heat['g'] = heat_func(z)
+else:
+    heat['g'] = np.zeros(heat['g'].shape)
 
 # Problem
-
 problem = d3.IVP([p, T, u, A, tau_p, tau_T1, tau_T2, tau_u1, tau_u2, tau_A1, tau_A2], namespace=locals())
 problem.add_equation("trace(grad_u) + tau_p = 0")
-problem.add_equation("dt(T) - kappa*div(grad_T) + lift(tau_T2) = - u@grad(T)")
+problem.add_equation("dt(T) - kappa*div(grad_T) + lift(tau_T2) = - u@grad(T) + heat")
 if (kinematic):
     logger.info("Assuming kinematic MHD, no Lorentz force feedback")
     problem.add_equation("dt(u) - nu*div(grad_u) + grad(p) - T*ez + lift(tau_u2) = - u@grad(u)") 
@@ -204,17 +232,39 @@ solver.stop_sim_time = stop_sim_time
 
 # Initial conditions
 T.fill_random('g', seed=42, distribution='normal', scale=1e-3) # Random noise
-T['g'] *= z * (Lz - z) # Damp noise at walls
-T['g'] += Lz - z # Add linear background
+if args['--currie']:
+    T['g'] *= z*(Lz-z)
+    low_temp = lambda z: (
+        (Delta / (4 * np.pi * np.pi))
+        * (1 + np.cos((2 * np.pi / Delta) * (z - (Delta / 2))))
+        - z * z / (2 * Delta)
+        + Lz
+        - Delta
+    )
+    mid_temp = lambda z: F * (-z + Lz - Delta / 2)
+    high_temp = lambda z: F * (
+        -Delta
+        / (4 * np.pi * np.pi)
+        * (1 + np.cos((2 * np.pi / Delta) * (z - Lz + Delta / 2)))
+        + 1 / (2 * Delta) * (z * z - 2 * Lz * z + Lz * Lz)
+    )
+    T["g"] += np.piecewise(
+        z,
+        [z <= Delta, z >= Lz - Delta],
+        [low_temp, high_temp, mid_temp],
+    )
+else:
+    T['g'] *= z * (Lz - z) # Damp noise at walls
+    T['g'] += Lz - z # Add linear background
 
 #A['g'] =1.0*x
 
 # Analysis and snapshots
 
-states = solver.evaluator.add_file_handler(outpath.joinpath('states'), sim_dt=1.0, max_writes=5000)
+states = solver.evaluator.add_file_handler(outpath.joinpath('states'), sim_dt=2.0, max_writes=5000)
 states.add_tasks(solver.state, layout='g')
 
-snapshots = solver.evaluator.add_file_handler(outpath.joinpath('snapshots'), sim_dt=0.25, max_writes=5000)
+snapshots = solver.evaluator.add_file_handler(outpath.joinpath('snapshots'), sim_dt=0.5, max_writes=5000)
 snapshots.add_task(T, name='buoyancy')
 snapshots.add_task(-d3.div(d3.skew(u)), name='vorticity')
 snapshots.add_task(A, name='A')
@@ -222,7 +272,7 @@ snapshots.add_task(-dz(A), name='Bx')
 snapshots.add_task(dx(A), name='Bz')
 
 
-analysis = solver.evaluator.add_file_handler(outpath.joinpath('analysis'), sim_dt=0.25, max_writes=5000)
+analysis = solver.evaluator.add_file_handler(outpath.joinpath('analysis'), sim_dt=0.5, max_writes=5000)
 analysis.add_task(d3.Integrate(T,coords['x'])/Lx, layout='g', name='<T>_x')
 analysis.add_task(d3.Integrate(Tz,coords['x'])/Lx, layout='g', name='<Tz>_x')
 
@@ -304,10 +354,13 @@ try:
         if (solver.iteration-1) % 10 == 0:
             max_Re = flow.max('Re')
             max_A = flow.max('A')
+            if np.isnan(max_Re):
+                raise NaNFlowError
             logger.info('Iteration=%i, Time=%e, dt=%e, max(Re)=%f, max(A)=%g' %(solver.iteration, solver.sim_time, timestep, max_Re, max_A))
+except NaNFlowError:
+    logger.error("max Re is nan. Ending loop.")
 except:
     logger.error('Exception raised, triggering end of main loop.')
-    raise
 finally:
     solver.log_stats()
 
