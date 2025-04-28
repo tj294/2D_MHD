@@ -3,6 +3,7 @@ data/
 d3_rb_convect.py
 batch.sh
 logs/
+*.out
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
