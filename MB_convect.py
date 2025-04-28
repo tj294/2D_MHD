@@ -23,11 +23,12 @@ Options:
     --background        # include background field
     --alfven            # include alfven velocity limit
     --slip=<slip>       # Slip conditions (no/free) [default: free]
+    -i IN, --input=<IN> # Input directory
     -o OUT, --output=<OUT> # Output directory [default: ./data/output/]
 """
 import numpy as np
 import dedalus.public as d3
-import logging, sys, json
+import logging, sys, json, re
 from datetime import datetime
 from docopt import docopt
 from pathlib import Path
@@ -48,7 +49,6 @@ Rayleigh = float(args['--Ra'])
 Prandtl = float(args['--Pr'])
 Pm = float(args['--Pm'])
 Q = float(args['--Q'])
-stop_sim_time = float(args['--stop'])
 max_timestep = float(args['--maxdt'])
 if args['--kinematic']:
     kinematic = True
@@ -67,8 +67,22 @@ if args['--currie']:
     Lz = Lz + 2*Delta
     Lx = Lx*Lz
 
+if args["--input"]:
+    restart_path = Path(args["--input"])
+    if not restart_path.joinpath('snapshots').exists():
+        logger.error(f"Restart Path {restart_path} not found.")
+        raise FileNotFoundError
+        exit(-10)
+    
+    logger.info("Reading from {}".format(restart_path))
+    with open(restart_path.joinpath('run_params/runparams.json'), 'r') as f:
+        inparams = json.load(f)
+        Lx = inparams['Lx']
+        Lz = inparams['Lz']
+
 outpath = Path(args['--output'])
 outpath.mkdir(parents=True, exist_ok=True)
+logger.info("Writing to {}".format(outpath))
 
 dealias = 3/2
 timestepper = d3.RK222
@@ -221,50 +235,63 @@ problem.add_equation("integ(p) = 0") # Pressure gauge
 problem.add_equation("dz(A)(z=Lz) = 0")
 problem.add_equation("dz(A)(z=0) = 0")
 
-
-
-
-
-
 # Solver
 solver = problem.build_solver(timestepper)
-solver.stop_sim_time = stop_sim_time
 
 # Initial conditions
-T.fill_random('g', seed=42, distribution='normal', scale=1e-3) # Random noise
-if args['--currie']:
-    T['g'] *= z*(Lz-z)
-    low_temp = lambda z: (
-        (Delta / (4 * np.pi * np.pi))
-        * (1 + np.cos((2 * np.pi / Delta) * (z - (Delta / 2))))
-        - z * z / (2 * Delta)
-        + Lz
-        - Delta
-    )
-    mid_temp = lambda z: F * (-z + Lz - Delta / 2)
-    high_temp = lambda z: F * (
-        -Delta
-        / (4 * np.pi * np.pi)
-        * (1 + np.cos((2 * np.pi / Delta) * (z - Lz + Delta / 2)))
-        + 1 / (2 * Delta) * (z * z - 2 * Lz * z + Lz * Lz)
-    )
-    T["g"] += np.piecewise(
-        z,
-        [z <= Delta, z >= Lz - Delta],
-        [low_temp, high_temp, mid_temp],
-    )
+if args['--input']:
+    restart_file = sorted(list(restart_path.glob('states/*.h5')), 
+    key=lambda f: int(re.sub('\D', '', str(f.name).rsplit('.')[0])))[-1]
+    write, last_dt = solver.load_state(restart_file, -1)
+    dt = last_dt
+    first_iter = solver.iteration
+    if '+' in args['--stop'][0]:
+        stop_sim_time = solver.sim_time + float(args['--stop'][1:])
+    else:
+        stop_sim_time = float(args['--stop'])
+    fh_mode = 'append'
 else:
-    T['g'] *= z * (Lz - z) # Damp noise at walls
-    T['g'] += Lz - z # Add linear background
+    if '+' in args['--stop']:
+        stop_sim_time = float(args['--stop'][1:])
+    else:
+        stop_sim_time = float(args['--stop'])
+    
+    T.fill_random('g', seed=42, distribution='normal', scale=1e-3) # Random noise
+    if args['--currie']:
+        T['g'] *= z*(Lz-z)
+        low_temp = lambda z: (
+            (Delta / (4 * np.pi * np.pi))
+            * (1 + np.cos((2 * np.pi / Delta) * (z - (Delta / 2))))
+            - z * z / (2 * Delta)
+            + Lz
+            - Delta
+        )
+        mid_temp = lambda z: F * (-z + Lz - Delta / 2)
+        high_temp = lambda z: F * (
+            -Delta
+            / (4 * np.pi * np.pi)
+            * (1 + np.cos((2 * np.pi / Delta) * (z - Lz + Delta / 2)))
+            + 1 / (2 * Delta) * (z * z - 2 * Lz * z + Lz * Lz)
+        )
+        T["g"] += np.piecewise(
+            z,
+            [z <= Delta, z >= Lz - Delta],
+            [low_temp, high_temp, mid_temp],
+        )
+    else:
+        T['g'] *= z * (Lz - z) # Damp noise at walls
+        T['g'] += Lz - z # Add linear background
+    first_iter = 0
+    dt = max_timestep
+    fh_mode = 'overwrite'
 
 #A['g'] =1.0*x
 
 # Analysis and snapshots
-
-states = solver.evaluator.add_file_handler(outpath.joinpath('states'), sim_dt=2.0, max_writes=5000)
+states = solver.evaluator.add_file_handler(outpath.joinpath('states'), sim_dt=2.0, max_writes=5000, mode=fh_mode)
 states.add_tasks(solver.state, layout='g')
 
-snapshots = solver.evaluator.add_file_handler(outpath.joinpath('snapshots'), sim_dt=0.5, max_writes=5000)
+snapshots = solver.evaluator.add_file_handler(outpath.joinpath('snapshots'), sim_dt=0.5, max_writes=5000, mode=fh_mode)
 snapshots.add_task(T, name='buoyancy')
 snapshots.add_task(-d3.div(d3.skew(u)), name='vorticity')
 snapshots.add_task(A, name='A')
@@ -272,7 +299,7 @@ snapshots.add_task(-dz(A), name='Bx')
 snapshots.add_task(dx(A), name='Bz')
 
 
-analysis = solver.evaluator.add_file_handler(outpath.joinpath('analysis'), sim_dt=0.5, max_writes=5000)
+analysis = solver.evaluator.add_file_handler(outpath.joinpath('analysis'), sim_dt=0.5, max_writes=5000, mode=fh_mode)
 analysis.add_task(d3.Integrate(T,coords['x'])/Lx, layout='g', name='<T>_x')
 analysis.add_task(d3.Integrate(Tz,coords['x'])/Lx, layout='g', name='<Tz>_x')
 
@@ -325,7 +352,7 @@ with open(outpath.joinpath("run_params/args.txt"), "a+") as file:
 
 
 # CFL
-CFL = d3.CFL(solver, initial_dt=max_timestep, cadence=10, safety=0.5, threshold=0.05,
+CFL = d3.CFL(solver, initial_dt=dt, cadence=10, safety=0.5, threshold=0.05,
              max_change=1.5, min_change=0.5, max_dt=max_timestep)
 CFL.add_velocity(u)
 
@@ -334,18 +361,15 @@ if (use_alfven_velocity_limit):
 
     CFL.add_velocity(u_alfven_pert)
 
-
-
-
 # Flow properties
 flow = d3.GlobalFlowProperty(solver, cadence=10)
 flow.add_property(np.sqrt(u@u)/nu, name='Re')
 flow.add_property(np.sqrt(A**2), name='A')
 
-
+solver.stop_sim_time = stop_sim_time
+solver.warmup_iterations = solver.iteration+100
 
 # Main loop
-startup_iter = 10
 try:
     logger.info('Starting main loop')
     while solver.proceed:
@@ -362,5 +386,7 @@ except NaNFlowError:
 except:
     logger.error('Exception raised, triggering end of main loop.')
 finally:
+    solver.evaluate_handlers(dt=timestep)
     solver.log_stats()
+    logger.info("Written to {}".format(outpath))
 
