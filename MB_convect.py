@@ -145,10 +145,11 @@ ux = ex@u
 uz = ez@u
 Btrans = Bz*ex - Bx*ez
 Bvec = Bx*ex + Bz*ez
-B_scale = (Q*nu*eta*4.0*np.pi)**(1/2) # characteristic scale for B
 
+B_scale = (Q*nu*eta*4.0*np.pi)**(1/2) # characteristic scale for B
 B_back = B_scale
-B_back_vector = B_back*ex + B_back*ez
+B_back_vector = 0*ex + B_back*ez
+B_back_trans = B_back*ex + 0*ez
 
 #? Heating function
 F = 1
@@ -182,7 +183,7 @@ if (kinematic):
 else : 
     if (include_background_field): 
         logger.info("Including Lorentz force feedback including background field")
-        problem.add_equation("dt(u) - nu*div(grad_u) + grad(p) - T*ez + (1/Ma_sq)*Jy*B_back_vector + lift(tau_u2) = - u@grad(u)- (1/Ma_sq)*Jy*Btrans ") 
+        problem.add_equation("dt(u) - nu*div(grad_u) + grad(p) - T*ez + (1/Ma_sq)*Jy*B_back_vector + lift(tau_u2) = - u@grad(u) - (1/Ma_sq)*Jy*Btrans ") 
     else:
         logger.info("Including Lorentz force feedback without background field")
         problem.add_equation("dt(u) - nu*div(grad_u) + grad(p) - T*ez + lift(tau_u2) = - u@grad(u) - (1/Ma_sq)*Jy*Btrans")         
@@ -241,7 +242,7 @@ solver = problem.build_solver(timestepper)
 # Initial conditions
 if args['--input']:
     restart_file = sorted(list(restart_path.glob('states/*.h5')), 
-    key=lambda f: int(re.sub('\D', '', str(f.name).rsplit('.')[0])))[-1]
+    key=lambda f: int(re.sub(r'\D', '', str(f.name).rsplit('.')[0])))[-1]
     write, last_dt = solver.load_state(restart_file, -1)
     dt = last_dt
     first_iter = solver.iteration
@@ -281,6 +282,8 @@ else:
     else:
         T['g'] *= z * (Lz - z) # Damp noise at walls
         T['g'] += Lz - z # Add linear background
+    # # ? Set initial Vector Potential to A = B_0 x
+    # A['g'] += B_scale * x
     first_iter = 0
     dt = max_timestep
     fh_mode = 'overwrite'
@@ -291,7 +294,7 @@ else:
 states = solver.evaluator.add_file_handler(outpath.joinpath('states'), sim_dt=2.0, max_writes=5000, mode=fh_mode)
 states.add_tasks(solver.state, layout='g')
 
-snapshots = solver.evaluator.add_file_handler(outpath.joinpath('snapshots'), sim_dt=0.5, max_writes=5000, mode=fh_mode)
+snapshots = solver.evaluator.add_file_handler(outpath.joinpath('snapshots'), sim_dt=0.1, max_writes=5000, mode=fh_mode)
 snapshots.add_task(T, name='buoyancy')
 snapshots.add_task(-d3.div(d3.skew(u)), name='vorticity')
 snapshots.add_task(A, name='A')
@@ -299,7 +302,7 @@ snapshots.add_task(-dz(A), name='Bx')
 snapshots.add_task(dx(A), name='Bz')
 
 
-analysis = solver.evaluator.add_file_handler(outpath.joinpath('analysis'), sim_dt=0.5, max_writes=5000, mode=fh_mode)
+analysis = solver.evaluator.add_file_handler(outpath.joinpath('analysis'), sim_dt=0.1, max_writes=5000, mode=fh_mode)
 analysis.add_task(d3.Integrate(T,coords['x'])/Lx, layout='g', name='<T>_x')
 analysis.add_task(d3.Integrate(Tz,coords['x'])/Lx, layout='g', name='<Tz>_x')
 
@@ -317,15 +320,7 @@ analysis.add_task(d3.Integrate(mag_E,coords['x'])/Lx, layout='g', name='ME')
 analysis.add_task(d3.Average(mag_E, coords)/(Lx*Lz), layout='g', name="B^2")
 
 # Nusselt
-analysis.add_task( 1.0 + d3.Integrate(T*w, coords)/(kappa*Lx*Lz), layout='g', name='Nusselt')
-
-analysis.add_task(1/Lx * d3.Integrate(Tz(z=0), coords['x']), layout='g', name='WeissNu0')
-analysis.add_task(1/Lx * d3.Integrate(Tz(z=0.5), coords['x']), layout='g', name='WeissNu0.5')
-analysis.add_task(1/Lx * d3.Integrate(Tz(z=Lz), coords['x']), layout='g', name='WeissNu1')
-
-analysis.add_task(1/Lx * d3.Integrate(1 - Tz(z=0), coords['x']), layout='g', name='BBNu0')
-analysis.add_task(1/Lx * d3.Integrate(1 - Tz(z=0.5), coords['x']), layout='g', name='BBNu0.5')
-analysis.add_task(1/Lx * d3.Integrate(1 - Tz(z=Lz), coords['x']), layout='g', name='BBNu1')
+analysis.add_task( 1.0 + d3.Average(T*w, coords)/(-1.0*kappa*d3.Average(Tz, coords)), layout='g', name='Nusselt')
 
 outpath.joinpath("run_params").mkdir(parents=True, exist_ok=True)
 run_params = {

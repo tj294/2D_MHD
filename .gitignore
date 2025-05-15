@@ -1,8 +1,11 @@
 # My Additions
-data/
+data
+kinematic_data/
 d3_rb_convect.py
 batch.sh
 logs/
+test/
+*.pdf
 *.out
 
 # Byte-compiled / optimized / DLL files
