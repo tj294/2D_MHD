@@ -97,8 +97,8 @@ if args['-g']:
         fig, ax = plt.subplots()
         cf = plt.contourf(xx, zz, Temp[tidx], 70, cmap='inferno')
         tsm = plt.cm.ScalarMappable(norm=tnorm, cmap='inferno')
-        # if count!=0:
-        plt.quiver(xx[::10, ::10], zz[::10, ::10], Bx[tidx, ::10, ::10], Bz[tidx, ::10, ::10], color='white')
+        if count!=0:
+            plt.quiver(xx[::10, ::10], zz[::10, ::10], Bx[tidx, ::10, ::10], Bz[tidx, ::10, ::10], color='white')
         norm = mpl.colors.Normalize(vmin=-np.max(A), vmax=np.max(A))
         cs = plt.contour(xx, zz, A[tidx], 5, cmap='PiYG', norm=norm)
         sm = plt.cm.ScalarMappable(norm=norm, cmap='PiYG')
@@ -112,7 +112,7 @@ if args['-g']:
         Bcb.ax.xaxis.set_label_position('top')
         ax.set_xlabel('x')
         ax.set_ylabel('z')
-        ax.set_title(rf'$\tau_{{ff}}$ = {t:.2f}, R={outdict['Rf']:.1e}, Q={outdict["Q"]:.2f}')
+        ax.set_title(rf'$\tau_{{ff}}$ = {t:.2f}, R={outdict["Rf"]:.1e}, Q={outdict["Q"]:.2f}')
         fnames.append(direc.joinpath(f'frames/{count:0>3d}.jpg'))
         plt.tight_layout()
         plt.savefig(fnames[-1], dpi=500)

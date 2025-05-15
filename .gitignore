@@ -5,6 +5,7 @@ d3_rb_convect.py
 batch.sh
 logs/
 test/
+*/
 *.pdf
 *.out
 
