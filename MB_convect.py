@@ -146,7 +146,8 @@ uz = ez@u
 Btrans = Bz*ex - Bx*ez
 Bvec = Bx*ex + Bz*ez
 
-B_scale = (Q*nu*eta*4.0*np.pi)**(1/2) # characteristic scale for B
+# B_scale = (Q*nu*eta*4.0*np.pi)**(1/2) # characteristic scale for B
+B_scale = 1.0 # characteristic scale for B
 B_back = B_scale
 B_back_vector = 0*ex + B_back*ez
 B_back_trans = B_back*ex + 0*ez
@@ -183,7 +184,7 @@ if (kinematic):
 else : 
     if (include_background_field): 
         logger.info("Including Lorentz force feedback including background field")
-        problem.add_equation("dt(u) - nu*div(grad_u) + grad(p) - T*ez + (1/Ma_sq)*Jy*B_back_vector + lift(tau_u2) = - u@grad(u) - (1/Ma_sq)*Jy*Btrans ") 
+        problem.add_equation("dt(u) - nu*div(grad_u) + grad(p) - T*ez - (1/Ma_sq)*Jy*B_back_trans + lift(tau_u2) = - u@grad(u) + (1/Ma_sq)*Jy*Btrans ") 
     else:
         logger.info("Including Lorentz force feedback without background field")
         problem.add_equation("dt(u) - nu*div(grad_u) + grad(p) - T*ez + lift(tau_u2) = - u@grad(u) - (1/Ma_sq)*Jy*Btrans")         
@@ -233,8 +234,12 @@ else:
 problem.add_equation("integ(p) = 0") # Pressure gauge
 #problem.add_equation("integ(phi) = 0") # Pressure gauge
 
-problem.add_equation("dz(A)(z=Lz) = 0")
-problem.add_equation("dz(A)(z=0) = 0")
+# problem.add_equation("dz(A)(z=Lz) = 0")
+# problem.add_equation("dz(A)(z=0) = 0")
+
+# Magnetically Conducting boundary conditions:
+problem.add_equation('A(z=0) = 0')
+problem.add_equation('A(z=Lz) = 0')
 
 # Solver
 solver = problem.build_solver(timestepper)
