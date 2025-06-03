@@ -1,4 +1,6 @@
 # My Additions
+*.ipynb
+mattmhd.py
 data
 kinematic_data/
 d3_rb_convect.py
