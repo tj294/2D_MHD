@@ -8,6 +8,7 @@ Options:
     --Pr=<Pr>           # Prandtl number [default: 1]
     --Pm=<Pm>           # Magnetic Pr [default: 1]
     --Q=<Q>             # Chandrasekhar number [default: 1e3]
+    --theta=<theta>     # Alignment of field to vertical [default: 0]
     --Lx=<Lx>           # Aspect Ratio of Box [default: 1]
     --Lz=<Lz>           # Depth of box [default: 1]
     --Nx=<Nx>           # Horizontal resolution [default: 64]
@@ -49,6 +50,7 @@ Rayleigh = float(args['--Ra'])
 Prandtl = float(args['--Pr'])
 Pm = float(args['--Pm'])
 Q = float(args['--Q'])
+theta = np.radians(float(args['--theta']))
 max_timestep = float(args['--maxdt'])
 if args['--kinematic']:
     kinematic = True
@@ -101,9 +103,6 @@ u = dist.VectorField(coords, name='u', bases=(xbasis,zbasis))
 A = dist.Field(name='A', bases=(xbasis,zbasis)) # A_y component of vector potential, 2D 
 phi = dist.Field(name='phi', bases=(xbasis,zbasis))
 
-
-
-
 tau_p = dist.Field(name='tau_p')
 tau_T1 = dist.Field(name='tau_T1', bases=xbasis)
 tau_T2 = dist.Field(name='tau_T2', bases=xbasis)
@@ -117,11 +116,18 @@ tau_phi = dist.Field(name='tau_phi')
 
 
 # Substitutions
-kappa = (Rayleigh * Prandtl)**(-1/2)
-nu = (Rayleigh / Prandtl)**(-1/2)
-#eta = (Pr/(Rayleigh*(Pm**2)))**(1/2)
-eta = nu/Pm
-Ma_sq = (Rayleigh*Pm/(Q*Prandtl))
+#? Flux-Based Rayleigh Number
+kappa = (Rayleigh * Prandtl)**(-1/3)
+nu = (Rayleigh / (Prandtl**2))**(-1/3)
+eta = (Prandtl**2 / (Rayleigh * Pm))**(1/3)
+Ma_sq = (Rayleigh/(Prandtl**2))**(2/3) * (Pm / Q)
+
+#? Temp-based Rayleigh Number
+# kappa = (Rayleigh * Prandtl)**(-1/2)
+# nu = (Rayleigh / Prandtl)**(-1/2)
+# eta = nu/Pm
+# Ma_sq = (Rayleigh*Pm/(Q*Prandtl))
+
 
 x, z = dist.local_grids(xbasis, zbasis)
 ex, ez = coords.unit_vector_fields(dist)
@@ -144,14 +150,21 @@ Jy = -d3.lap(A)
 ux = ex@u
 uz = ez@u
 Btrans = Bz*ex - Bx*ez
-Bvec = Bx*ex + Bz*ez
+B_vector = Bx*ex + Bz*ez
 
 # B_scale = (Q*nu*eta*4.0*np.pi)**(1/2) # characteristic scale for B
 B_scale = 1.0 # characteristic scale for B
-B_back = B_scale
-B_back_vector = 0*ex + B_back*ez
-B_back_trans = B_back*ex + 0*ez
+B_back_vert = B_scale * np.cos(theta)
+B_back_horiz = B_scale * np.sin(theta)
+B_back_vector = B_back_horiz*ex + B_back_vert*ez
+B_back_trans = B_back_vert*ex + B_back_horiz*ez
+Bfx = (B_back_horiz + Bx)
+Bfz = (B_back_vert + Bz)
+B_full = (B_back_horiz + Bx)*ex + (B_back_vert + Bz)*ez
+A_back = B_scale * (x*np.sin(theta) - z*np.cos(theta))
 
+JxB = ex*(Jy * (B_back_vert + Bz)) + ez*(-Jy*(B_back_horiz + Bx))
+S = ex * (uz*Bfx*Bfz - ux*Bfz*Bfz - (1/Pm)*Jy*Bz) + ez*(ux*Bfx*Bfz - uz*Bfx*Bfx - (1/Pm)*Jy*Bfx)
 #? Heating function
 F = 1
 heat = dist.Field(bases=zbasis)
@@ -187,36 +200,40 @@ else :
         problem.add_equation("dt(u) - nu*div(grad_u) + grad(p) - T*ez - (1/Ma_sq)*Jy*B_back_trans + lift(tau_u2) = - u@grad(u) + (1/Ma_sq)*Jy*Btrans ") 
     else:
         logger.info("Including Lorentz force feedback without background field")
-        problem.add_equation("dt(u) - nu*div(grad_u) + grad(p) - T*ez + lift(tau_u2) = - u@grad(u) - (1/Ma_sq)*Jy*Btrans")         
+        problem.add_equation("dt(u) - nu*div(grad_u) + grad(p) - T*ez + lift(tau_u2) = - u@grad(u) + (1/Ma_sq)*Jy*Btrans")         
 
 if (include_background_field):
     logger.info("including background field induction term")
-    problem.add_equation("dt(A)  - eta*div(grad_A) + ux*B_back + lift(tau_A2) = - u@grad(A)") 
+    problem.add_equation("dt(A)  - eta*div(grad_A) + ux*B_back_vert - w*B_back_horiz + lift(tau_A2) = - u@grad(A)") 
     
 else:
     logger.info("ignoring background field induction term")
     problem.add_equation("dt(A)  - eta*div(grad_A) + lift(tau_A2) = - u@grad(A)") 
     
-if args['--bottom']=='fixed':
+if args['--bottom']=='fixed-t':
     problem.add_equation("T(z=0) = Lz")
 elif args['--bottom']=='insulating':
     problem.add_equation("Tz(z=0)=0")
 elif args['--bottom']=='vanishing':
     problem.add_equation("T(z=0)=0")
+elif args['--bottom']=='fixed-f':
+    problem.add_equation('Tz(z=0)=-F')
 else:
     logger.error(f"Bottom BC {args['--bottom']} not recognised.")
-    logger.error(f"Accepted values are 'fixed', 'vanishing' or 'insulating'.")
+    logger.error(f"Accepted values are 'fixed-t', 'fixed-f', 'vanishing' or 'insulating'.")
     exit(-1)
 
-if args['--top'] == 'fixed':
-    problem.add_equation("T(z=Lz) = Lz")
+if args['--top'] == 'fixed-t':
+    problem.add_equation("T(z=Lz) = 0")
 elif args['--top']=='insulating':
     problem.add_equation("Tz(z=Lz) = 0")
 elif args['--top']=='vanishing':
     problem.add_equation("T(z=Lz) = 0")
+elif args['--top']=='fixed-f':
+    problem.add_equation("Tz(z=Lz) = -F")
 else:
     logger.error(f"Top BC {args['--top']} not recognised.")
-    logger.error(f"Accepted values are 'fixed', 'vanishing' or 'insulating'.")
+    logger.error(f"Accepted values are 'fixed-t', 'fixed-f', 'vanishing' or 'insulating'.")
     exit(-1)
 
 if args['--slip'] == 'no':
@@ -234,10 +251,11 @@ else:
 problem.add_equation("integ(p) = 0") # Pressure gauge
 #problem.add_equation("integ(phi) = 0") # Pressure gauge
 
+#? Magnetically Insulating BCs
 # problem.add_equation("dz(A)(z=Lz) = 0")
 # problem.add_equation("dz(A)(z=0) = 0")
 
-# Magnetically Conducting boundary conditions:
+#? Magnetically Conducting BCs (Cresswell+23):
 problem.add_equation('A(z=0) = 0')
 problem.add_equation('A(z=Lz) = 0')
 
@@ -302,31 +320,55 @@ states.add_tasks(solver.state, layout='g')
 snapshots = solver.evaluator.add_file_handler(outpath.joinpath('snapshots'), sim_dt=0.1, max_writes=5000, mode=fh_mode)
 snapshots.add_task(T, name='buoyancy')
 snapshots.add_task(-d3.div(d3.skew(u)), name='vorticity')
-snapshots.add_task(A, name='A')
+snapshots.add_task(A, name='A1')
 snapshots.add_task(-dz(A), name='Bx')
 snapshots.add_task(dx(A), name='Bz')
+snapshots.add_task(B_back_vector, name='Bb')
+snapshots.add_task(B_vector, name='Bp')
+snapshots.add_task(B_back_vector + B_vector, name='B_field')
+snapshots.add_task((1 / Ma_sq) * Jy * B_back_trans, name='FLb')
+snapshots.add_task((1/Ma_sq) * Jy * Btrans, name='FLp')
+snapshots.add_task(Jy, name="J")
+snapshots.add_task(heat, name='heat')
 
 
 analysis = solver.evaluator.add_file_handler(outpath.joinpath('analysis'), sim_dt=0.1, max_writes=5000, mode=fh_mode)
 analysis.add_task(d3.Integrate(T,coords['x'])/Lx, layout='g', name='<T>_x')
 analysis.add_task(d3.Integrate(Tz,coords['x'])/Lx, layout='g', name='<Tz>_x')
 
-# Mean Re
-analysis.add_task(d3.Average(np.sqrt(u@u)/nu , ('x', 'z')), layout='g', name='Reavg')
 
+#! Power Integral Terms
+#* Thermal Energy Balance
+analysis.add_task(d3.Average(d3.Gradient(T) @ d3.Gradient(T), ('x', 'z')), name='<Eps_T>', layout='g')
+analysis.add_task(d3.Average(heat*T, ('x', 'z')), name='<QT>', layout='g')
+analysis.add_task(d3.Average(T(z=0), 'x') - d3.Average(T(z=1), 'x'), layout='g', name='dT')
+#* Kinetic Energy Balance
+analysis.add_task(d3.Average(
+            d3.Trace(d3.TransposeComponents(d3.Gradient(u)) @ d3.Gradient(u)),
+            ("x", "z"),
+        ), layout='g', name='<Eps_u>')
+analysis.add_task(d3.Average(w*T, ('x', 'z')) + (1/Ma_sq)*d3.Average(u@JxB, ("x", "z")), layout='g', name='<wT>+<u.JxB>')
 
-# Flux decomposition - Internal energy equation
+#* Magnetic Energy Balance
+analysis.add_task(d3.Average(Jy*Jy, ('x', 'z')), layout='g', name='<Eps_B>')
+analysis.add_task(Pm * d3.Average(u @ (JxB), ('x', 'z')), layout='g', name='<u.JxB>')
+
+#! Flux decomposition - Internal energy equation
 analysis.add_task(d3.Integrate(T*w,coords['x'])/Lx, layout='g', name='L_conv')
 analysis.add_task(-1.0*kappa*(d3.Integrate(Tz, coords['x'])/Lx), layout='g', name='L_cond_tot')
 
-# magnetic energy
-mag_E  = np.sqrt(Bvec@Bvec)
+#! magnetic energy
+mag_E  = 0.5*np.sqrt(B_full@B_full)
 analysis.add_task(d3.Integrate(mag_E,coords['x'])/Lx, layout='g', name='ME')
 analysis.add_task(d3.Average(mag_E, coords)/(Lx*Lz), layout='g', name="B^2")
 
-# Nusselt
+#! Nusselt
 analysis.add_task( 1.0 + d3.Average(T*w, coords)/(-1.0*kappa*d3.Average(Tz, coords)), layout='g', name='Nusselt')
 
+#! Mean Re
+analysis.add_task(d3.Average(np.sqrt(u@u)/nu , ('x', 'z')), layout='g', name='Reavg')
+
+#! Run Params
 outpath.joinpath("run_params").mkdir(parents=True, exist_ok=True)
 run_params = {
     "Lx": Lx,
