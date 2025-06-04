@@ -40,6 +40,16 @@ def vprint(text, verbose=args['-v'], end='\n'):
     if verbose:
         print(text, end=end)
 
+def rolling_average(quantity, time, window: float):
+    assert len(time) == len(quantity)
+    run_ave = []
+    for i, t0 in enumerate(time):
+        mean = np.nanmean(
+            quantity[(time > t0 - window / 2) & (time <= t0 + window / 2)]
+        )
+        run_ave.append(mean)
+    return np.array(run_ave)
+
 vprint(args)
 
 
@@ -87,15 +97,23 @@ if args['-e']:
     ME_inst = np.trapezoid(ME_prof, x=z, axis=1)
     vprint("Plotting Energies")
     fig, ax = plt.subplots()
-    ax.scatter(atime, Re_inst, label='Re', marker='+')
-    ax.scatter(atime, Nu_inst, label='Nu', marker='+')
-    ax.scatter(atime, ME_inst, label="ME", marker='+')
+    Re_ave = rolling_average(Re_inst, atime, 50)
+    Nu_ave = rolling_average(Nu_inst, atime, 50)
+    ME_ave = rolling_average(ME_inst, atime, 50)
+    ax.plot(atime, Re_ave, color='k')
+    ax.plot(atime, Nu_ave, color='red')
+    ax.plot(atime, ME_ave, color='forestgreen')
+    ylims = ax.get_ylim()
+    print(ylims)
+    ax.scatter(atime, Re_inst, label='Re', marker='+', color='C0')
+    ax.scatter(atime, Nu_inst, label='Nu', marker='+', color='C1')
+    ax.scatter(atime, ME_inst, label="ME", marker='+', color='C2')
     ax.axvspan(atime[aASI], atime[aAEI], color='grey', alpha=0.2)
     ax.set_xlabel(r"$\tau_{ff}$")
     ax.set_ylabel("Energy")
     ax.legend(loc='best')
     ymax = 1.5 * np.max([np.max(Re_inst[aASI:aAEI]), np.max(Nu_inst[aASI:aAEI]), np.max(ME_inst[aASI:aAEI])])
-    ax.set_ylim(-1., ymax)
+    ax.set_ylim(ylims)
     plt.savefig(outpath.joinpath("energy.pdf"), dpi=500)
     vprint("Done.")
 
@@ -253,14 +271,14 @@ if args['-g']:
                 Temp = np.array(f['tasks']['buoyancy'])
                 Bx = np.array(f['tasks']['Bx'])
                 Bz = np.array(f['tasks']['Bz'])
-                A = np.array(f['tasks']['A'])
+                A = np.array(f['tasks']['A1'])
         else:
             with h5.File(sfile, 'r') as f:
                 snap_time = np.concatenate((snap_time, np.array(f['tasks']['buoyancy'].dims[0]['sim_time'])))
                 Temp = np.concatenate((Temp, np.array(f['tasks']['buoyancy'])), axis=0)
                 Bx = np.concatenate((Bx, np.array(f['tasks']['Bx'])), axis=0)
                 Bz = np.concatenate((Bz, np.array(f['tasks']['Bz'])), axis=0)
-                A = np.concatenate((A, np.array(f['tasks']['A'])), axis=0)
+                A = np.concatenate((A, np.array(f['tasks']['A1'])), axis=0)
     X, Z = np.meshgrid(x, z)
     cadence = int(args['--cadence'])
     count = 0
@@ -285,19 +303,19 @@ if args['-g']:
         # if count!=0:
             # plt.quiver(X[::10, ::10], Z[::10, ::10], Bx[tidx, ::10, ::10], Bz[tidx, ::10, ::10], color='white')
             # plt.quiver(X[::10, ::10], Z[::10, ::10], Bx(full_A)[::10, ::10], Bz(full_A)[::10, ::10], color='white')
-        norm = mpl.colors.Normalize(vmin=np.min(full_A), vmax=np.max(full_A))
+        # norm = mpl.colors.Normalize(vmin=np.min(full_A), vmax=np.max(full_A))
         # norm = mpl.colors.Normalize(vmin=-1, vmax=1)
-        cs = plt.contour(X, Z, full_A, 20, cmap='PiYG', norm=norm)
+        cs = plt.contour(X, Z, full_A, 20, colors='white', linestyles='solid')
         # plt.streamplot(x, z, Bx(full_A), Bz(full_A))
-        sm = plt.cm.ScalarMappable(norm=norm, cmap='PiYG')
-        sm.set_array([])
+        # sm = plt.cm.ScalarMappable(norm=norm, cmap='PiYG')
+        # sm.set_array([])
         Tcax = ax.inset_axes([1, 0, 0.05, 1])
-        Bcax = ax.inset_axes([0, 1, 1, 0.05])
+        # Bcax = ax.inset_axes([0, 1, 1, 0.05])
         plt.colorbar(cf, cax=Tcax, label='T', pad=0)
         # plt.colorbar(tsm, cax=Tcax, label='T', pad=0)
-        Bcb = plt.colorbar(sm, cax=Bcax, label='A', orientation='horizontal', pad=0)
-        Bcb.ax.xaxis.set_ticks_position('top')
-        Bcb.ax.xaxis.set_label_position('top')
+        # Bcb = plt.colorbar(sm, cax=Bcax, label='A', orientation='horizontal', pad=0)
+        # Bcb.ax.xaxis.set_ticks_position('top')
+        # Bcb.ax.xaxis.set_label_position('top')
         ax.set_xlabel('x')
         ax.set_ylabel('z')
         ax.set_title(rf'$\tau_{{ff}}$ = {t:.2f}, R={outdict["Rf"]:.1e}, Q={outdict["Q"]:.2f}')
